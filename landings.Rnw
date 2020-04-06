@@ -1,0 +1,589 @@
+\documentclass[12pt,letter]{article}
+
+\usepackage{amsfonts,amsmath,amssymb}
+% \usepackage{bibentry}
+% \nobibliography*
+\usepackage[yyyymmdd]{datetime}
+\renewcommand{\dateseparator}{-}
+\usepackage[margin=0.8in]{geometry}
+\usepackage{gensymb} %to use extra symbols, such as {\degree}
+\usepackage{graphicx}
+\usepackage[colorlinks]{hyperref}
+\hypersetup{allcolors=blue,linktocpage,linktoc=all}
+\usepackage{multicol}
+\usepackage[sort]{natbib}
+\renewcommand\bibname{References}
+\usepackage{parskip}
+\usepackage[section]{placeins} %to use the command \FloatBarrier
+\usepackage{titlesec}
+\newcommand{\sectionbreak}{\clearpage} %to start each section with a new page
+\usepackage{tocloft} %to have dots in the TOC after sections
+\renewcommand{\cftsecleader}{\cftdotfill{\cftdotsep}}
+
+\newcommand*{\doi}[1]{DOI \href{http://dx.doi.org/#1}{#1}} %to add URLs to DOIs in references
+
+
+\title{Environmental Drivers of Golden Tilefish Fisheries\footnote
+{These data and code support the results presented in (recommended citation):\vspace*{0.5em}\newline
+Nesslage G, Lyubchich V, Nitschke P, Williams E, Grimes C, Wiedenmann J (2020)
+Environmental drivers of golden tilefish (\emph{Lopholatilus chamaeleonticeps}) landings and catch per unit effort.
+In progress.\vspace*{0.7em}\newline
+\hspace*{1.8em}Citation for the current data and code:\vspace*{0.5em}\newline
+Lyubchich V, Nesslage G (2020) github.com/vlyubchich/tilefish: Environmental Drivers of Golden Tilefish Fisheries. Zenodo. DOI 10.5281/zenodo.3732840.  \url{https://doi.org/10.5281/zenodo.3732840}.}
+}
+
+\author{Vyacheslav Lyubchich and Genevi\`{e}ve Nesslage\\
+{\small Chesapeake Biological Laboratory, University of Maryland Center for Environmental Science,}\\
+{\small Solomons, MD, 20688, USA}
+}
+
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\thispagestyle{empty}
+
+<<setup, echo = FALSE>>=
+options(digits = 3)
+options(width = 110) #width of text output from R
+opts_chunk$set(size = 'scriptsize', echo = T, eval = T, fig.width = 7, fig.height = 4,
+               out.width = '\\textwidth', fig.show = "hold",
+               fig.align = "center", message = FALSE, warning = FALSE)
+@
+
+
+
+\section{Packages and functions}
+<<>>=
+rm(list = ls())
+#Packages and custom functions used
+#All packages are needed, but some are not loaded fully to avoid conflicts
+library(Boruta)
+# library(dplyr)
+# library(forecast)
+library(funtimes)
+library(GGally)
+# library(Hmisc)
+library(mgcv)
+library(ranger)
+library(randomForest)
+library(xtable)
+
+
+summaryVL = function(X){
+  out = sapply(c(1:ncol(X)), function(i) summary(X[,i])[1:6])
+  colnames(out) = names(X)
+  if(any(is.na(X))){
+    Missing = apply(is.na(X), 2, sum)
+    out = rbind(out, Missing)
+  }
+  out
+}
+@
+
+Some colors to start with
+<<fig.height = 0.5>>=
+COL = c("black",
+        rgb(100, 38, 33, maxColorValue = 100), #red
+        rgb(0, 65, 55, maxColorValue = 100), #green
+        rgb(28, 24, 61, maxColorValue = 100), #blue
+        rgb(76, 32, 72, maxColorValue = 100), #purple
+        rgb(21, 75, 87, maxColorValue = 100), #cyan
+        rgb(0, 47, 59, maxColorValue = 100) #dark cyan
+)
+par(mar = c(0, 0, 0, 0), mgp = c(0, 0, 0))
+barplot(rep(1, length(COL)), col = COL, border = NA, axes = FALSE, space = c(0, 0))
+@
+
+
+
+\section{Data pre-processing}
+
+\subsection{Load}
+
+<<>>=
+D = read.csv("./dataraw/landings.csv")
+D = D[order(D$Year),]
+rownames(D) = D$Year
+@
+
+Table~\ref{tab:summNum} gives a summary of the numeric variables (the last row is the number of missing values, i.e., \texttt{NA}'s).
+<<>>=
+tmp = summaryVL(D[, -3])
+@
+
+<<results="asis", echo=FALSE>>=
+print(xtable(tmp, label = "tab:summNum",
+             caption = "Summary statistics for numeric variables in the dataset"),
+      scalebox = 0.66, latex.environments = "center", caption.placement = "top")
+@
+
+
+Table~\ref{tab:summCat} provides a summary of the categorical variables.
+
+<<>>=
+tmp = summary(D[, 3, drop = FALSE])
+rownames(tmp) = NULL
+@
+
+
+<<results="asis", echo=FALSE>>=
+print(xtable(tmp, label = "tab:summCat",
+             caption = "Summary statistics for categorical variables in the dataset"),
+      scalebox = 0.66, latex.environments = "center", caption.placement = "top")
+@
+
+
+\subsection{Create lagged series, remove FMP period}
+
+\citet{Fisher:etal:2014} suggest that landings are correlated with climate indices lagged by up to seven years, so we add those lagged values to the analysis.
+
+<<>>=
+n = names(D)
+v = grep("AMO_|NAO_|LTSST", n) #variables to lag
+L = 7 #number of lags to add to variables v
+for (i in v) { #i=4
+  tmp = sapply(1:L, function(x) dplyr::lag(D[,i], x))
+  colnames(tmp) = paste(n[i], "_l", 1:L, sep = "")
+  D = cbind(D, tmp)
+}
+#Save a copy of the file, cut off the FMP period with fishing restrictions
+D0 = D
+D = D[D$Year <= 2000, ]
+D$Time_block = droplevels(D$Time_block)
+@
+
+
+\subsection{Tests and visualizations}
+
+The landings time series has few missing values that can be reasonably guessed with linear interpolation (see Figure~\ref{fig:longTS}):
+<<>>=
+indNA = is.na(D$Landings) #save the location of what we fill-in for later
+D$Landings = forecast::na.interp(D$Landings) #interpolate NAs
+TBend = tapply(D$Year, D$Time_block, max) #end year of each time block
+TBcenter = round(tapply(D$Year, D$Time_block, mean)) #year-center of each time block
+@
+
+Try to remove the right skewness using a power transformation (log is too much, use square root):
+<<>>=
+D$sqrtLandings = sqrt(D$Landings)
+@
+
+
+\begin{figure}
+\centering
+<<fig.height=7.5>>=
+par(mar = c(4, 4, 0.1, 1) + 0.1, mgp = c(3, 0.7, 0), mfrow = c(3, 1))
+attach(D)
+plot(x = Year, y = Landings, las = 1, type = "o", xlab = "", ylim = c(0, 5000))
+points(x = Year[indNA], y = Landings[indNA], bg = COL[2], pch = 21)
+abline(v = TBend + 0.5, lty = 2, col = COL[3])
+text(x = c(1916, TBcenter[-1]), y = 4900, col = COL[3], labels = names(TBcenter))
+plot(x = Year, y = AMO_DJFMA, las = 1, type = "o", xlab = "")
+plot(x = Year, y = NAO_DJFMA_PC, las = 1, type = "o")
+detach(D)
+@
+\caption{Plots of the main time series, \Sexpr{min(D$Year)}--\Sexpr{max(D$Year)}. Filled circles represent filled-in (interpolated) values. Dashed vertical lines denote the time blocks.}
+\label{fig:longTS}
+\end{figure}
+
+
+Apply a non-parametric test for trends~\citep{Lyubchich:etal:2013:wavk} that is suitable for autocorrelated and conditionally heteroskedastic data.
+Specifically, we test the null hypothesis that the unknown trend function $\mu(t)$ in the observed time series is constant (i.e., the hypothesis of no trend) vs.\ the alternative of some other trend (including the cases of a linear, monotonic, or non-linear trend):
+\begin{equation}\label{eq:wavkH}
+H_0: \mu(t) \equiv 0\quad \text{vs.}\quad H_1: \mu(t) \neq 0.
+\end{equation}
+<<>>=
+set.seed(111)
+wavk.test(D$Landings ~ 1,
+          factor.length = "adaptive.selection", ar.method = "yw")
+wavk.test(D$sqrtLandings ~ 1,
+          factor.length = "adaptive.selection", ar.method = "yw")
+set.seed(222)
+wavk.test(D0$AMO_DJFMA ~ 1,
+          factor.length = "adaptive.selection", ar.method = "yw")
+wavk.test(D0$AMO_annual ~ 1,
+          factor.length = "adaptive.selection", ar.method = "yw")
+set.seed(333)
+wavk.test(D0$NAO_DJF_PC ~ 1,
+          factor.length = "adaptive.selection", ar.method = "yw")
+wavk.test(D0$NAO_DJF_st ~ 1,
+          factor.length = "adaptive.selection", ar.method = "yw")
+wavk.test(D0$NAO_DJFMA_PC ~ 1,
+          factor.length = "adaptive.selection", ar.method = "yw")
+wavk.test(D0$NAO_DJFMA_st ~ 1,
+          factor.length = "adaptive.selection", ar.method = "yw")
+@
+It is reasonable that the test rejects the $H_0$ for the time series of landings because there are important time blocks of the fisheries that affect the average landings; to account for that we will use the time block variable in the regression models.
+
+See some of the scatterplots in Figure~\ref{fig:pairsLand}.
+
+
+\begin{figure}
+\centering
+<<fig.height = 10, fig.width=10>>=
+tmp = c(#grep("Time_block", names(D)),
+  grep("l4", names(D)),
+  grep("Land", names(D)))
+ggpairs(D[,tmp])
+@
+\caption{Matrix of scatterplots, univariate distributions (main diagonal), and pairwise correlations for the period of \Sexpr{min(D$Year)}--\Sexpr{max(D$Year)}. Only some of the lagged variables are plotted for visibility.}
+\label{fig:pairsLand}
+\end{figure}
+
+
+
+\section{Random forest}
+
+References about the methods:
+\citet{Breiman:2001,Hastie:etal:2009,Kursa:Rudnicki:2010,Wright:Ziegler:2017}.
+
+Random forest inputs:
+<<>>=
+NTREE = 500
+Nnode = 3
+RESPONSE = "sqrtLandings"
+RESPONSEprint = "sqrt(Landings)"
+#predictors
+n = names(D)
+vnot = grep("Landings|Year", n, value = TRUE) #variables to exclude
+predictors = sort(setdiff(n, vnot))
+DATA = D
+DATAnoNA = na.omit(DATA[,c(RESPONSE, predictors)])
+@
+
+
+Variable selection:
+<<>>=
+set.seed(444)
+B = Boruta::Boruta(as.formula(paste(RESPONSE, ".", sep = " ~ ")),
+                   doTrace = 1, maxRuns = 5000,
+                   data = DATAnoNA)
+print(B)
+st = attStats(B)
+# print(st)
+# v = rownames(st)[st$decision != "Rejected"]
+v = rownames(st)[st$decision == "Confirmed"]
+@
+
+The selected variables in alphabetic order (green in Figure~\ref{fig:Boruta}):
+<<>>=
+sort(v)
+@
+
+
+\begin{figure}
+\centering
+<<fig.height = 5, fig.width=10>>=
+par(mar = c(9, 4, 0.1, 1) + 0.1)
+plot(B, las = 2, xlab = "")
+@
+\caption{Boxplots of predictor importance over runs of the Boruta algorithm.}
+\label{fig:Boruta}
+\end{figure}
+
+
+That is, from the original
+\Sexpr{length(predictors)} variables we selected
+\Sexpr{length(v)} variables. Get the final random forest with those \Sexpr{length(v)} variables:
+<<>>=
+set.seed(555)
+DATAnoNA = na.omit(DATA[, c(RESPONSE, v)])
+rf_allv = ranger(dependent.variable.name = RESPONSE, data = DATAnoNA,
+                 #importance = 'impurity_corrected',
+                 min.node.size = Nnode,
+                 respect.unordered.factors = 'partition',
+                 num.trees = NTREE)
+print(rf_allv)
+@
+
+
+Non-adjusted R$^2$:
+<<>>=
+# Not really useful for us
+y = DATAnoNA[, RESPONSE]
+e = y - predict(rf_allv, data = DATAnoNA)$predictions
+1 - sum(e^2) / sum((y - mean(y))^2)
+@
+
+
+Final random forest output from another package (see error plot in Figure~\ref{fig:rftrees} and partial dependence plots in Figure~\ref{fig:partial}):
+<<>>=
+set.seed(666)
+rf_allv2 = randomForest(y = DATAnoNA[,RESPONSE],
+                        x = DATAnoNA[, v],
+                        nodesize = rf_allv$min.node.size,
+                        mtry = rf_allv$mtry,
+                        ntree = rf_allv$num.trees)
+print(rf_allv2)
+@
+
+
+\begin{figure}
+<<>>=
+par(mar = c(4, 4, 0.1, 1) + 0.1)
+plot(rf_allv2, las = 1, main = "")
+@
+\caption{Random forest error based on the number of trees.}
+\label{fig:rftrees}
+\end{figure}
+
+
+\begin{figure}
+<<fig.width=7, fig.height=6>>=
+RF = rf_allv2
+preds = sort(v)
+par(mfrow = c(ceiling(length(preds)/4), 4))
+par(bty = "L", mar = c(5, 4, 1, 1) + 0.1, mgp = c(2, 0.7, 0))
+for(i in 1:length(preds)) {
+  l = ifelse(is.factor(DATAnoNA[,preds[i]]), 2, 1) #rotate labels for categorical predictor
+  x = ifelse(is.factor(DATAnoNA[,preds[i]]), "", preds[i]) #x-label
+  partialPlot(RF, pred.data = DATAnoNA, x.var = preds[i],
+              las = l, xlab = x, ylab = "", main = "", xpd = F
+              ,ylim = c(25, 34)
+  )
+  mtext(RESPONSEprint, side = 2, line = 3, cex = 0.7)
+  mtext(paste("(", letters[i], ")", sep = ""), side = 3, line = 0.1, cex = 0.8, adj = -0.37)
+}
+@
+\caption{Partial dependence plots for the random forest for
+\Sexpr{RESPONSEprint} of golden tilefish. The plots are in alphabetic order by the name of the explanatory variable. The inner tickmarks on the horizontal axis denote deciles of the respective explanatory variable.}
+\label{fig:partial}
+\end{figure}
+
+
+\FloatBarrier
+\subsection{Cross-validation}
+
+Scheme:\label{cvscheme}
+\begin{enumerate}
+\item Train model using data up to the middle of the \texttt{PostWWII} period.
+\item Forecast until the end of that period.
+\item Repeat the above steps for the period \texttt{Longline}.
+\end{enumerate}
+
+<<>>=
+set.seed(777)
+CVperiods = c("PostWWII", "Longline")
+PRED = as.list(rep(NA, length(CVperiods)))
+yrs = as.numeric(rownames(DATAnoNA))
+for (cv in seq_along(CVperiods)){ # cv=1
+  indtrain = yrs[1]:TBcenter[CVperiods[cv]]
+  indtest = (TBcenter[CVperiods[cv]] + 1):TBend[CVperiods[cv]]
+  rf_cv = ranger(dependent.variable.name = RESPONSE,
+                 data = DATAnoNA[as.character(indtrain),],
+                 #importance = 'impurity_corrected',
+                 min.node.size = Nnode,
+                 respect.unordered.factors = 'partition',
+                 num.trees = NTREE)
+  obs =  DATAnoNA[as.character(indtest), RESPONSE] #observed in the testing set
+  pred = predict(rf_cv, data = DATAnoNA[as.character(indtest),])$predictions #predictions
+  PRED[[cv]] = list(obs = obs, pred = pred)
+}
+@
+
+Prediction mean absolute error (PMAE) and prediction root mean square error (PRMSE).
+<<>>=
+err = lapply(PRED, function(x) x$obs - x$pred)
+err = unlist(err)
+@
+PMAE
+<<>>=
+mean(abs(err))
+@
+PRMSE
+<<>>=
+sqrt(mean(err^2))
+@
+
+
+
+\section{Generalized additive modeling (GAM)}
+
+References about the methods: \citet{Wood:2006book,Zuur:etal:2009}.
+
+\begin{figure}[h]
+<<fig.width=10, fig.height=9>>=
+ggpairs(DATAnoNA[,c(v, RESPONSE)])
+@
+\caption{Scatterplot matrix of
+\Sexpr{RESPONSEprint} and variables selected in the random forest.}
+\label{fig:pairsLand_rf}
+\end{figure}
+
+Full model:
+<<>>=
+K <- 5
+gam_0 <- gamfit <- mgcv::gam(sqrtLandings ~
+                               Time_block
+                             + s(AMO_annual_l5, k = K)
+                             + s(AMO_annual_l6, k = K)
+                             + s(AMO_annual_l7, k = K)
+                             + s(AMO_DJFMA_l5, k = K)
+                             + s(AMO_DJFMA_l6, k = K)
+                             + s(AMO_DJFMA_l7, k = K)
+                             + s(NAO_DJF_PC_l1, k = K)
+                             + s(NAO_DJF_PC_l3, k = K)
+                             + s(NAO_DJF_PC_l4, k = K)
+                             + s(NAO_DJF_st_l3, k = K)
+                             + s(NAO_DJF_st_l4, k = K)
+                             + s(NAO_DJFMA_st_l6, k = K)
+                             , select = TRUE
+                             , bs = "cr" #cr/cs/cc
+                             , method = "REML"
+                             , data = DATAnoNA)
+summary(gamfit)
+concurvity(gamfit)[3,-1]
+@
+
+Spearman correlations:
+<<>>=
+Hmisc::rcorr(as.matrix(DATAnoNA[,c(RESPONSE, v[-length(v)])]),
+             type = "spearman")[[1]]
+@
+
+High concurvity. Most of the concurvity is due to duplicated information (e.g., annual and winter form of a climate index). From each pair of concurve terms, select such term to remove, which is less correlated with the response (use Spearman's correlation coefficient, which allows to account for possibly non-linear monotonic relationship). Based on this approach, we favor the winter form of AMO (keep in the model), and remove the annual AMO version; favor PC-based/station-based NAO and remove station-based/PC-based NAO.
+
+Further variable selection is done by stepwise removal of terms with the largest non-significant $p$-value, until all remaining terms are statistically significant (also see gam.selection\{mgcv\}).
+
+To additionally incorporate autocorrelation into the model (to get rid of autocorrelation in the model residuals), fit a generalized additive mixed model (GAMM) with autocorrelation structure specified as AR(1) -- autoregression of the order 1 -- and the autoregression coefficient $\phi$ estimated from the data. See the autocorrelation function (ACF) plot of the final (reduced) model residuals in Figure~\ref{fig:gam_acf}.
+
+Reduced model:
+<<>>=
+### removed because of concurvity
+#1# after that, removed first because of non-significance
+##1 after that, switched to gamm and AR1 structure and continue removal
+set.seed(111111)
+K <- 5
+gam_1 <- gamfit <- mgcv::gamm(sqrtLandings ~
+                                ##1 Time_block
+                                ### + s(AMO_annual_l5, k = K)
+                                ### + s(AMO_annual_l6, k = K)
+                                ### + s(AMO_annual_l7, k = K)
+                                #2# + s(AMO_DJFMA_l5, k = K)
+                                ##3 + s(AMO_DJFMA_l6, k = K)
+                                + s(AMO_DJFMA_l7, k = K)
+                              #1# + s(NAO_DJF_PC_l1, k = K)
+                              + s(NAO_DJF_PC_l3, k = K)
+                              ### + s(NAO_DJF_PC_l4, k = K)
+                              ### + s(NAO_DJF_st_l3, k = K)
+                              + s(NAO_DJF_st_l4, k = K)
+                              ##2 + s(NAO_DJFMA_st_l6, k = K)
+                              , select = TRUE
+                              , bs = "cr" #cr/cs/cc
+                              , method = "REML"
+                              , correlation = corAR1()
+                              , control = list(maxIter = 1000)
+                              , data = DATAnoNA)
+@
+
+GAM part:
+<<>>=
+summary(gamfit$gam)
+@
+
+LME part:
+<<>>=
+summary(gamfit$lme)
+shapiro.test(residuals(gamfit$lme, type = "normalized"))
+shapiro.test(residuals(gamfit$lme, type = "response"))
+@
+
+
+\begin{figure}
+\centering
+<<>>=
+par(mfrow = c(1, 2))
+plot.ts(residuals(gamfit$lme, type = "normalized"), las = 1)
+acf(residuals(gamfit$lme, type = "normalized"), las = 1, main = "Standardized residual ACF")
+@
+\caption{Time series plot and autocorrelation function of residuals of the reduced GAMM.}
+\label{fig:gam_acf}
+\end{figure}
+
+
+Run more checks:
+<<>>=
+gamfit <- gamfit$gam
+concurvity(gamfit)
+concurvity(gamfit, full = FALSE)$estimate
+gam.check(gamfit)
+@
+
+\begin{figure}
+<<>>=
+par(mfrow = c(1, 3))
+plot(gamfit, las = 1)
+@
+\caption{Smoothed terms of the final significant GAM for the \Sexpr{RESPONSEprint}.}
+\label{fig:gam_smooths}
+\end{figure}
+
+\FloatBarrier
+\subsection{Cross-validation}
+The scheme is the same as the one applied to random forests (see p.~\pageref{cvscheme}).
+
+<<>>=
+set.seed(222222)
+CVperiods = c("PostWWII", "Longline")
+PRED = as.list(rep(NA, length(CVperiods)))
+yrs = as.numeric(rownames(DATAnoNA))
+for (cv in seq_along(CVperiods)){ # cv=1
+  indtrain = yrs[1]:TBcenter[CVperiods[cv]]
+  indtest = (TBcenter[CVperiods[cv]] + 1):TBend[CVperiods[cv]]
+  gam_cv = mgcv::gamm(sqrtLandings ~
+                        + s(AMO_DJFMA_l7, k = K)
+                      + s(NAO_DJF_PC_l3, k = K)
+                      + s(NAO_DJF_st_l4, k = K)
+                      , select = TRUE
+                      , bs = "cr" #cr/cs/cc
+                      , method = "REML"
+                      , correlation = corAR1()
+                      , control = list(maxIter = 1000)
+                      , data = DATAnoNA[as.character(indtrain),])
+  obs =  DATAnoNA[as.character(indtest), RESPONSE] #observed in the testing set
+  # Predictions:
+  ## make a prediction, with random effects zero
+  pred_gam = predict(gam_cv$gam, newdata = DATAnoNA[as.character(indtest),])
+  phi <- gam_cv$lme$modelStruct$corStruct
+  phi <- coef(phi, unconstrained = FALSE) #AR(1) coefficient
+  ## extract autocorrelated errors in the training period (we'll need the last observed error)
+  fit_gam = fitted(gam_cv$lme)
+  e_train = DATAnoNA[as.character(indtrain), RESPONSE] - fit_gam
+  #acf(e_train) #ar(e_train, aic = FALSE, order.max = 1) #check that is similar to phi
+  e <- obs - pred_gam #autocorrelated error in the testing set
+  pred_gamm <- pred_gam + phi * c(e_train[length(e_train)], e[-length(e)])
+  PRED[[cv]] = list(obs = obs, pred = pred_gamm)
+}
+@
+
+Prediction mean absolute error (PMAE) and prediction root mean square error (PRMSE).
+<<>>=
+err = lapply(PRED, function(x) x$obs - x$pred)
+err = unlist(err)
+@
+PMAE
+<<>>=
+mean(abs(err))
+@
+PRMSE
+<<>>=
+sqrt(mean(err^2))
+@
+
+
+
+
+<<>>=
+save.image(paste0("./dataderived/tmp_", Sys.Date(), ".RData"))
+@
+
+
+\addcontentsline{toc}{section}{\bibname}
+\bibliographystyle{latex/spbasic}
+\bibliography{latex/refTilefish}
+\end{document}
+
+
+
