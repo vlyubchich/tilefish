@@ -23,13 +23,13 @@
 \newcommand*{\doi}[1]{DOI \href{http://dx.doi.org/#1}{#1}} %to add URLs to DOIs in references
 
 
-\title{Environmental Drivers of Golden Tilefish Fisheries\footnote
+\title{Environmental Drivers of Golden Tilefish Landings\footnote
 {These data and code support the results presented in (recommended citation):\vspace*{0.5em}\newline
 Nesslage G, Lyubchich V, Nitschke P, Williams E, Grimes C, Wiedenmann J (2020)
 Environmental drivers of golden tilefish (\emph{Lopholatilus chamaeleonticeps}) landings and catch per unit effort.
 In progress.\vspace*{0.7em}\newline
 \hspace*{1.8em}Citation for the current data and code:\vspace*{0.5em}\newline
-Lyubchich V, Nesslage G (2020) github.com/vlyubchich/tilefish: Environmental Drivers of Golden Tilefish Fisheries. Zenodo. DOI 10.5281/zenodo.3732840.  \url{https://doi.org/10.5281/zenodo.3732840}.}
+Lyubchich V, Nesslage G (2020) github.com/vlyubchich/tilefish: Environmental Drivers of Golden Tilefish Landings. Zenodo. DOI 10.5281/zenodo.3732840.  \url{https://doi.org/10.5281/zenodo.3732840}.}
 }
 
 \author{Vyacheslav Lyubchich and Genevi\`{e}ve Nesslage\\
@@ -84,13 +84,14 @@ summaryVL = function(X){
 
 Some colors to start with
 <<fig.height = 0.5>>=
-COL = c("black",
-        rgb(100, 38, 33, maxColorValue = 100), #red
-        rgb(0, 65, 55, maxColorValue = 100), #green
-        rgb(28, 24, 61, maxColorValue = 100), #blue
-        rgb(76, 32, 72, maxColorValue = 100), #purple
-        rgb(21, 75, 87, maxColorValue = 100), #cyan
-        rgb(0, 47, 59, maxColorValue = 100) #dark cyan
+COL = c(black = "black"
+        ,red = rgb(100, 38, 33, maxColorValue = 100)
+        ,green = rgb(38, 77, 19, maxColorValue = 100)
+        ,blue = rgb(28, 24, 61, maxColorValue = 100)
+        ,purple = rgb(76, 32, 72, maxColorValue = 100)
+        ,cyan = rgb(21, 75, 87, maxColorValue = 100)
+        ,dark_cyan = rgb(0, 47, 59, maxColorValue = 100)
+        ,yellow = rgb(99, 90, 13, maxColorValue = 100)
 )
 par(mar = c(0, 0, 0, 0), mgp = c(0, 0, 0))
 barplot(rep(1, length(COL)), col = COL, border = NA, axes = FALSE, space = c(0, 0))
@@ -103,9 +104,11 @@ barplot(rep(1, length(COL)), col = COL, border = NA, axes = FALSE, space = c(0, 
 \subsection{Load}
 
 <<>>=
-D = read.csv("./dataraw/landings.csv")
+D = read.csv("./dataraw/landings.csv", stringsAsFactors = FALSE)
 D = D[order(D$Year),]
 rownames(D) = D$Year
+#convert to the (unordered) factor:
+D$Time_block = factor(D$Time_block, levels = unique(D$Time_block))
 @
 
 Table~\ref{tab:summNum} gives a summary of the numeric variables (the last row is the number of missing values, i.e., \texttt{NA}'s).
@@ -137,20 +140,25 @@ print(xtable(tmp, label = "tab:summCat",
 
 \subsection{Create lagged series, remove FMP period}
 
-\citet{Fisher:etal:2014} suggest that landings are correlated with climate indices lagged by up to seven years, so we add those lagged values to the analysis.
+\citet{Fisher:etal:2014} suggest that landings are correlated with the Dec--Feb station-based NAO index lagged by up to seven years, so we add those lagged values to the analysis (and lagged values of the other climate indices).
 
 <<>>=
 n = names(D)
-v = grep("AMO_|NAO_|LTSST", n) #variables to lag
+v = grep("AMO_|NAO_", n) #variables to lag
 L = 7 #number of lags to add to variables v
 for (i in v) { #i=4
   tmp = sapply(1:L, function(x) dplyr::lag(D[,i], x))
   colnames(tmp) = paste(n[i], "_l", 1:L, sep = "")
   D = cbind(D, tmp)
 }
-#Save a copy of the file, cut off the FMP period with fishing restrictions
+@
+
+Landings data from 2001--2017 (the terminal time block \texttt{FMP}) were removed from the analysis to exclude landings that were quota-limited.
+
+<<>>=
+#Save a copy of the full dataset as D0, cut off the FMP period with fishing restrictions
 D0 = D
-D = D[D$Year <= 2000, ]
+D = D[D$Time_block != "FMP", ]
 D$Time_block = droplevels(D$Time_block)
 @
 
@@ -161,8 +169,8 @@ The landings time series has few missing values that can be reasonably guessed w
 <<>>=
 indNA = is.na(D$Landings) #save the location of what we fill-in for later
 D$Landings = forecast::na.interp(D$Landings) #interpolate NAs
-TBend = tapply(D$Year, D$Time_block, max) #end year of each time block
-TBcenter = round(tapply(D$Year, D$Time_block, mean)) #year-center of each time block
+(TBend = tapply(D$Year, D$Time_block, max)) #end year of each time block
+(TBcenter = round(tapply(D$Year, D$Time_block, mean))) #year-center of each time block
 @
 
 Try to remove the right skewness using a power transformation (log is too much, use square root):
@@ -177,9 +185,9 @@ D$sqrtLandings = sqrt(D$Landings)
 par(mar = c(4, 4, 0.1, 1) + 0.1, mgp = c(3, 0.7, 0), mfrow = c(3, 1))
 attach(D)
 plot(x = Year, y = Landings, las = 1, type = "o", xlab = "", ylim = c(0, 5000))
-points(x = Year[indNA], y = Landings[indNA], bg = COL[2], pch = 21)
-abline(v = TBend + 0.5, lty = 2, col = COL[3])
-text(x = c(1916, TBcenter[-1]), y = 4900, col = COL[3], labels = names(TBcenter))
+points(x = Year[indNA], y = Landings[indNA], bg = COL["red"], pch = 21)
+abline(v = TBend + 0.5, lty = 2, col = COL["green"])
+text(x = c(1916, TBcenter[-1]), y = 4900, col = COL["green"], labels = names(TBcenter))
 plot(x = Year, y = AMO_DJFMA, las = 1, type = "o", xlab = "")
 plot(x = Year, y = NAO_DJFMA_PC, las = 1, type = "o")
 detach(D)
@@ -222,7 +230,7 @@ See some of the scatterplots in Figure~\ref{fig:pairsLand}.
 
 \begin{figure}
 \centering
-<<fig.height = 10, fig.width=10>>=
+<<fig.height = 12, fig.width=10>>=
 tmp = c(#grep("Time_block", names(D)),
   grep("l4", names(D)),
   grep("Land", names(D)))
@@ -245,7 +253,7 @@ NTREE = 500
 Nnode = 3
 RESPONSE = "sqrtLandings"
 RESPONSEprint = "sqrt(Landings)"
-#predictors
+#Predictors:
 n = names(D)
 vnot = grep("Landings|Year", n, value = TRUE) #variables to exclude
 predictors = sort(setdiff(n, vnot))
@@ -261,8 +269,7 @@ B = Boruta::Boruta(as.formula(paste(RESPONSE, ".", sep = " ~ ")),
                    doTrace = 1, maxRuns = 5000,
                    data = DATAnoNA)
 print(B)
-st = attStats(B)
-# print(st)
+st = attStats(B) # print(st)
 # v = rownames(st)[st$decision != "Rejected"]
 v = rownames(st)[st$decision == "Confirmed"]
 @
@@ -275,11 +282,13 @@ sort(v)
 
 \begin{figure}
 \centering
-<<fig.height = 5, fig.width=10>>=
-par(mar = c(9, 4, 0.1, 1) + 0.1)
-plot(B, las = 2, xlab = "")
+<<fig.height = 10, fig.width=9>>=
+par(mar = c(4, 9, 0.1, 1) + 0.1)
+plot(B, horizontal = TRUE,
+     colCode = COL[c("green", "yellow", "red", "blue")],
+     las = 1, ylab = "", xlab = "Importance")
 @
-\caption{Boxplots of predictor importance over runs of the Boruta algorithm.}
+\caption{Boxplots of predictor importance over runs of the Boruta algorithm. Green boxes correspond to predictors confirmed as important; red boxes correspond to rejected predictors, and blue boxes combine importance information (min, mean, and max) from shadow predictors obtained by permuting the original ones.}
 \label{fig:Boruta}
 \end{figure}
 
@@ -331,7 +340,7 @@ plot(rf_allv2, las = 1, main = "")
 
 
 \begin{figure}
-<<fig.width=7, fig.height=6>>=
+<<fig.width=8, fig.height=7>>=
 RF = rf_allv2
 preds = sort(v)
 par(mfrow = c(ceiling(length(preds)/4), 4))
@@ -341,9 +350,9 @@ for(i in 1:length(preds)) {
   x = ifelse(is.factor(DATAnoNA[,preds[i]]), "", preds[i]) #x-label
   partialPlot(RF, pred.data = DATAnoNA, x.var = preds[i],
               las = l, xlab = x, ylab = "", main = "", xpd = F
-              ,ylim = c(25, 34)
+              ,ylim = c(25, 34) #fix y-scale across plots
   )
-  mtext(RESPONSEprint, side = 2, line = 3, cex = 0.7)
+  mtext(RESPONSEprint, side = 2, line = 2, cex = 0.7)
   mtext(paste("(", letters[i], ")", sep = ""), side = 3, line = 0.1, cex = 0.8, adj = -0.37)
 }
 @
@@ -383,6 +392,15 @@ for (cv in seq_along(CVperiods)){ # cv=1
 }
 @
 
+Count number of test samples per cross-validation run
+<<>>=
+(tmp = sapply(PRED, function(x) length(x[[1]])))
+@
+and total
+<<>>=
+sum(tmp)
+@
+
 Prediction mean absolute error (PMAE) and prediction root mean square error (PRMSE).
 <<>>=
 err = lapply(PRED, function(x) x$obs - x$pred)
@@ -404,7 +422,7 @@ sqrt(mean(err^2))
 References about the methods: \citet{Wood:2006book,Zuur:etal:2009}.
 
 \begin{figure}[h]
-<<fig.width=10, fig.height=9>>=
+<<fig.width=11, fig.height=12>>=
 ggpairs(DATAnoNA[,c(v, RESPONSE)])
 @
 \caption{Scatterplot matrix of
@@ -414,25 +432,26 @@ ggpairs(DATAnoNA[,c(v, RESPONSE)])
 
 Full model:
 <<>>=
-K <- 5
-gam_0 <- gamfit <- mgcv::gam(sqrtLandings ~
-                               Time_block
-                             + s(AMO_annual_l5, k = K)
-                             + s(AMO_annual_l6, k = K)
-                             + s(AMO_annual_l7, k = K)
-                             + s(AMO_DJFMA_l5, k = K)
-                             + s(AMO_DJFMA_l6, k = K)
-                             + s(AMO_DJFMA_l7, k = K)
-                             + s(NAO_DJF_PC_l1, k = K)
-                             + s(NAO_DJF_PC_l3, k = K)
-                             + s(NAO_DJF_PC_l4, k = K)
-                             + s(NAO_DJF_st_l3, k = K)
-                             + s(NAO_DJF_st_l4, k = K)
-                             + s(NAO_DJFMA_st_l6, k = K)
-                             , select = TRUE
-                             , bs = "cr" #cr/cs/cc
-                             , method = "REML"
-                             , data = DATAnoNA)
+K = 5
+gam_0 = gamfit = mgcv::gam(sqrtLandings ~
+                             Time_block
+                           + s(AMO_annual_l5, k = K)
+                           + s(AMO_annual_l6, k = K)
+                           + s(AMO_annual_l7, k = K)
+                           + s(AMO_DJFMA_l5, k = K)
+                           + s(AMO_DJFMA_l6, k = K)
+                           + s(AMO_DJFMA_l7, k = K)
+                           + s(NAO_DJF_PC_l1, k = K)
+                           + s(NAO_DJF_PC_l3, k = K)
+                           + s(NAO_DJF_PC_l4, k = K)
+                           + s(NAO_DJF_st_l3, k = K)
+                           + s(NAO_DJF_st_l4, k = K)
+                           + s(NAO_DJFMA_st_l4, k = K)
+                           + s(NAO_DJFMA_st_l6, k = K)
+                           , select = TRUE
+                           , bs = "cr"
+                           , method = "REML"
+                           , data = DATAnoNA)
 summary(gamfit)
 concurvity(gamfit)[3,-1]
 @
@@ -445,37 +464,37 @@ Hmisc::rcorr(as.matrix(DATAnoNA[,c(RESPONSE, v[-length(v)])]),
 
 High concurvity. Most of the concurvity is due to duplicated information (e.g., annual and winter form of a climate index). From each pair of concurve terms, select such term to remove, which is less correlated with the response (use Spearman's correlation coefficient, which allows to account for possibly non-linear monotonic relationship). Based on this approach, we favor the winter form of AMO (keep in the model), and remove the annual AMO version; favor PC-based/station-based NAO and remove station-based/PC-based NAO.
 
-Further variable selection is done by stepwise removal of terms with the largest non-significant $p$-value, until all remaining terms are statistically significant (also see gam.selection\{mgcv\}).
+Further variable selection is done by stepwise removal of terms with the largest non-significant $p$-value, until all remaining terms are statistically significant (also see \texttt{?mgcv::gam.selection}).
 
-To additionally incorporate autocorrelation into the model (to get rid of autocorrelation in the model residuals), fit a generalized additive mixed model (GAMM) with autocorrelation structure specified as AR(1) -- autoregression of the order 1 -- and the autoregression coefficient $\phi$ estimated from the data. See the autocorrelation function (ACF) plot of the final (reduced) model residuals in Figure~\ref{fig:gam_acf}.
+To additionally incorporate autocorrelation into the model (to get rid of autocorrelation in the model residuals), fit a generalized additive mixed model (GAMM) with autocorrelation structure specified as AR(1) -- autoregression of the order 1 -- and the autoregression coefficient $\phi$ estimated from the data. See the autocorrelation function (ACF) plot of the residuals from the final (reduced) model in Figure~\ref{fig:gam_acf}.
 
 Reduced model:
 <<>>=
-### removed because of concurvity
+#cc removed because of concurvity
 #1# after that, removed first because of non-significance
 ##1 after that, switched to gamm and AR1 structure and continue removal
 set.seed(111111)
-K <- 5
-gam_1 <- gamfit <- mgcv::gamm(sqrtLandings ~
-                                ##1 Time_block
-                                ### + s(AMO_annual_l5, k = K)
-                                ### + s(AMO_annual_l6, k = K)
-                                ### + s(AMO_annual_l7, k = K)
-                                #2# + s(AMO_DJFMA_l5, k = K)
-                                ##3 + s(AMO_DJFMA_l6, k = K)
-                                + s(AMO_DJFMA_l7, k = K)
-                              #1# + s(NAO_DJF_PC_l1, k = K)
-                              + s(NAO_DJF_PC_l3, k = K)
-                              ### + s(NAO_DJF_PC_l4, k = K)
-                              ### + s(NAO_DJF_st_l3, k = K)
-                              + s(NAO_DJF_st_l4, k = K)
-                              ##2 + s(NAO_DJFMA_st_l6, k = K)
-                              , select = TRUE
-                              , bs = "cr" #cr/cs/cc
-                              , method = "REML"
-                              , correlation = corAR1()
-                              , control = list(maxIter = 1000)
-                              , data = DATAnoNA)
+K = 5
+gam_1 = gamfit = mgcv::gamm(sqrtLandings ~
+                         ##1 Time_block
+                       #cc + s(AMO_annual_l5, k = K)
+                       #cc + s(AMO_annual_l6, k = K)
+                       #cc + s(AMO_annual_l7, k = K)
+                        #2# + s(AMO_DJFMA_l5, k = K)
+                         ##3 + s(AMO_DJFMA_l6, k = K)
+                           + s(AMO_DJFMA_l7, k = K)
+                        #1# + s(NAO_DJF_PC_l1, k = K)
+                           + s(NAO_DJF_PC_l3, k = K)
+                       #cc + s(NAO_DJF_PC_l4, k = K)
+                       #cc + s(NAO_DJF_st_l3, k = K)
+                           + s(NAO_DJF_st_l4, k = K)
+                       #cc + s(NAO_DJFMA_st_l4, k = K)
+                         ##2 + s(NAO_DJFMA_st_l6, k = K)
+                           , select = TRUE
+                           , bs = "cr"
+                           , method = "REML"
+                           , correlation = corAR1()
+                           , data = DATAnoNA)
 @
 
 GAM part:
@@ -486,6 +505,10 @@ summary(gamfit$gam)
 LME part:
 <<>>=
 summary(gamfit$lme)
+@
+
+Normality of residuals:
+<<>>=
 shapiro.test(residuals(gamfit$lme, type = "normalized"))
 shapiro.test(residuals(gamfit$lme, type = "response"))
 @
@@ -493,9 +516,10 @@ shapiro.test(residuals(gamfit$lme, type = "response"))
 
 \begin{figure}
 \centering
-<<>>=
+<<fig.height=3>>=
 par(mfrow = c(1, 2))
 plot.ts(residuals(gamfit$lme, type = "normalized"), las = 1)
+abline(h = 0, col = COL["green"], lty = 2)
 acf(residuals(gamfit$lme, type = "normalized"), las = 1, main = "Standardized residual ACF")
 @
 \caption{Time series plot and autocorrelation function of residuals of the reduced GAMM.}
@@ -505,18 +529,18 @@ acf(residuals(gamfit$lme, type = "normalized"), las = 1, main = "Standardized re
 
 Run more checks:
 <<>>=
-gamfit <- gamfit$gam
+gamfit = gamfit$gam
 concurvity(gamfit)
 concurvity(gamfit, full = FALSE)$estimate
 gam.check(gamfit)
 @
 
 \begin{figure}
-<<>>=
+<<fig.height=3>>=
 par(mfrow = c(1, 3))
 plot(gamfit, las = 1)
 @
-\caption{Smoothed terms of the final significant GAM for the \Sexpr{RESPONSEprint}.}
+\caption{Smoothed terms of the final GAMM for the \Sexpr{RESPONSEprint}.}
 \label{fig:gam_smooths}
 \end{figure}
 
@@ -546,14 +570,14 @@ for (cv in seq_along(CVperiods)){ # cv=1
   # Predictions:
   ## make a prediction, with random effects zero
   pred_gam = predict(gam_cv$gam, newdata = DATAnoNA[as.character(indtest),])
-  phi <- gam_cv$lme$modelStruct$corStruct
-  phi <- coef(phi, unconstrained = FALSE) #AR(1) coefficient
+  phi = gam_cv$lme$modelStruct$corStruct
+  phi = coef(phi, unconstrained = FALSE) #AR(1) coefficient
   ## extract autocorrelated errors in the training period (we'll need the last observed error)
   fit_gam = fitted(gam_cv$lme)
   e_train = DATAnoNA[as.character(indtrain), RESPONSE] - fit_gam
   #acf(e_train) #ar(e_train, aic = FALSE, order.max = 1) #check that is similar to phi
-  e <- obs - pred_gam #autocorrelated error in the testing set
-  pred_gamm <- pred_gam + phi * c(e_train[length(e_train)], e[-length(e)])
+  e = obs - pred_gam #autocorrelated error in the testing set
+  pred_gamm = pred_gam + phi * c(e_train[length(e_train)], e[-length(e)])
   PRED[[cv]] = list(obs = obs, pred = pred_gamm)
 }
 @

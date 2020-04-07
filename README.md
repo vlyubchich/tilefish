@@ -1,4 +1,4 @@
-# Environmental Drivers of Golden Tilefish Fisheries
+# Environmental Drivers of Golden Tilefish Landings
 
 These data and code support the results presented in (recommended citation):
 
@@ -8,7 +8,7 @@ In progress.
 
 The current data and code:
 
-Lyubchich V, Nesslage G (2020) github.com/vlyubchich/tilefish: Environmental Drivers of Golden Tilefish Fisheries. Zenodo. DOI 10.5281/zenodo.3732840.
+Lyubchich V, Nesslage G (2020) github.com/vlyubchich/tilefish: Environmental Drivers of Golden Tilefish Landings. Zenodo. DOI 10.5281/zenodo.3732840.
 
 
 ## Data
@@ -33,7 +33,7 @@ Bibtex entry for the data and code:
 ```javascript
 @software{lyubchich_3732840,
   author = {Lyubchich, V and Nesslage, G},
-  title = {{github.com/vlyubchich/tilefish: Environmental Drivers of Golden Tilefish Fisheries}},
+  title = {{github.com/vlyubchich/tilefish: Environmental Drivers of Golden Tilefish Landings}},
   year = 2020,
   publisher = {Zenodo},
   version = {v1.0},
