@@ -31,7 +31,7 @@ The CPUE data are not provided due to federal confidentiality restrictions.
 Bibtex entry for the data and code:
 
 ```javascript
-@software{lyubchich_3732840,
+@software{lyubchich_3743867,
   author = {Lyubchich, V and Nesslage, G},
   title = {{github.com/vlyubchich/tilefish: Environmental Drivers of Golden Tilefish Landings}},
   year = 2020,
