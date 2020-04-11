@@ -1,4 +1,4 @@
-\documentclass[12pt,letter]{article}
+\documentclass[12pt,letterpaper]{article}
 
 \usepackage{amsfonts,amsmath,amssymb}
 % \usepackage{bibentry}
@@ -68,9 +68,13 @@ library(GGally)
 library(mgcv)
 library(ranger)
 library(randomForest)
+# library(plotmo)
 library(xtable)
+@
 
 
+<<>>=
+# Organize summaries for tables
 summaryVL = function(X){
   out = sapply(c(1:ncol(X)), function(i) summary(X[,i])[1:6])
   colnames(out) = names(X)
@@ -79,6 +83,61 @@ summaryVL = function(X){
     out = rbind(out, Missing)
   }
   out
+}
+@
+
+<<>>=
+# Forward-selection of variables for a GAM. See the exact specification in mgcv:: below.
+gamforward = function(y, x, data, verbose = TRUE) {
+  #y is a character name of the response variable;
+  #x is a character vector of x-variables, with most important first (order matters);
+  #data is a data frame containing y and x;
+  #verbose is a logical values indicating to print out the progress or not.
+  K = 5
+  alpha = 0.05
+  CCthresh = 0.7
+  problems = c("non-significance", "concurvity")
+  selected = character()
+  for(i in 1:length(x)) {
+    candidate = x[i]
+    problem_check = rep(NA, length(problems))
+    f = as.formula(paste0(y, " ~ s(", paste0(c(selected, candidate), collapse = ", k = K) + s("), ", k = K)"))
+    z = FALSE
+    tryCatch(
+      mod  <<-  mgcv::gamm(f
+                          , select = TRUE
+                          , bs = "cr"
+                          , method = "ML"
+                          , correlation = corARMA(p = 1, q = 0)
+                          , control = lmeControl(msMaxIter = 100)
+                          , data = data
+      ), error = function(c) {
+        z <<- TRUE
+        # assign("z", TRUE)
+      }
+    )
+    if (z) {
+      if(verbose) {print(paste0("Rejected ", candidate, " due to model non-convergence!!!"))}
+    } else {
+      #check significance
+      fixeff = summary(mod$lme)$tTable[-1, , drop = FALSE]
+      pv = fixeff[,ncol(fixeff)]
+      problem_check[1] = !all(pv < alpha) #TRUE will indicate a problem
+      #check concurvity
+      cc = concurvity(mod$gam)[3,-1]
+      problem_check[2] = !all(cc < CCthresh) #TRUE will indicate a problem
+      if (all(!problem_check)) { #if no problems
+        selected = c(selected, candidate)
+        if(verbose) {print(paste0("Added ", candidate))}
+        # acf(residuals(mod$lme, type = "normalized"), las = 1, main = candidate)
+      } else {
+        if(verbose) {print(paste0("Rejected ", candidate, " due to ", paste0(problems[problem_check], collapse = " and ")))}
+      }
+      rm(z)
+    }
+  }
+  print(paste0("Selected variables: ", paste0(selected, collapse = ", ")))
+  return(selected)
 }
 @
 
@@ -288,9 +347,41 @@ plot(B, horizontal = TRUE,
      colCode = COL[c("green", "yellow", "red", "blue")],
      las = 1, ylab = "", xlab = "Importance")
 @
-\caption{Boxplots of predictor importance over runs of the Boruta algorithm. Green boxes correspond to predictors confirmed as important; red boxes correspond to rejected predictors, and blue boxes combine importance information (min, mean, and max) from shadow predictors obtained by permuting the original ones.}
+\caption{Boxplots of predictor importance over runs of the Boruta algorithm. Green boxes correspond to predictors confirmed as important; red boxes correspond to rejected predictors, and blue boxes combine importance information (min, mean, and max) from shadow predictors obtained by permuting the original ones.
+Yellow boxes (if any) correspond to predictors without decision (treated as rejected).
+}
 \label{fig:Boruta}
 \end{figure}
+
+
+\textbf{2nd step of selection} -- use Altmann algorithm. The predictors are the original ones (not conditional on the 1st step).
+<<>>=
+set.seed(2)
+rf_i = ranger(dependent.variable.name = RESPONSE, data = DATAnoNA[,c(RESPONSE, predictors)],
+              importance = 'impurity_corrected',
+              min.node.size = Nnode, respect.unordered.factors = 'partition',
+              num.trees = NTREE)
+imp = importance_pvalues(rf_i, method = "altmann",
+                         num.permutations = 1000,
+                         formula = as.formula(paste(RESPONSE, ".", sep = " ~ ")),
+                         data = DATAnoNA[,c(RESPONSE, predictors)])
+imp = imp[imp[,2] < 0.05,]
+v2 = sort(rownames(imp))
+v = sort(intersect(v, v2))
+@
+
+The variables selected \textbf{by both} algorithms in alphabetic order:
+<<>>=
+v
+@
+
+
+The selected variables in order of decreasing importance (i.e., most important first):
+<<>>=
+w = imp[order(imp[,1], decreasing = TRUE),] #selected by Altmann sorted
+w = rownames(w)
+(w = w[is.element(w, v)]) #from the Altman-sorted, keep only those that appear in v
+@
 
 
 That is, from the original
@@ -350,7 +441,7 @@ for(i in 1:length(preds)) {
   x = ifelse(is.factor(DATAnoNA[,preds[i]]), "", preds[i]) #x-label
   partialPlot(RF, pred.data = DATAnoNA, x.var = preds[i],
               las = l, xlab = x, ylab = "", main = "", xpd = F
-              ,ylim = c(25, 34) #fix y-scale across plots
+              ,ylim = c(23, 34) #fix y-scale across plots
   )
   mtext(RESPONSEprint, side = 2, line = 2, cex = 0.7)
   mtext(paste("(", letters[i], ")", sep = ""), side = 3, line = 0.1, cex = 0.8, adj = -0.37)
@@ -361,6 +452,23 @@ for(i in 1:length(preds)) {
 \label{fig:partial}
 \end{figure}
 
+
+<<fig.width=11, fig.height=8>>=
+n = length(w) #number of single plots to plot
+plotmo::plotmo(RF, pmethod = "partdep"
+               ,degree1 = paste0("^", w[1:n], "$")
+               ,main = c(w[1:n]), caption = "Partial dependence plots"
+               ,degree2 = FALSE, type2 = "contour"
+               ,las = 1)
+@
+
+<<fig.width=11, fig.height=10>>=
+plotmo::plotmo(RF, pmethod = "plotmo"
+               ,degree1 = paste0("^", w[1:n], "$")
+               ,main = c(w[1:n]), caption = "Partial dependence plots"
+               ,degree2 = FALSE, type2 = "contour"
+               ,las = 1)
+@
 
 \FloatBarrier
 \subsection{Cross-validation}
@@ -405,16 +513,11 @@ Prediction mean absolute error (PMAE) and prediction root mean square error (PRM
 <<>>=
 err = lapply(PRED, function(x) x$obs - x$pred)
 err = unlist(err)
-@
-PMAE
-<<>>=
+# PMAE
 mean(abs(err))
-@
-PRMSE
-<<>>=
+# PRMSE
 sqrt(mean(err^2))
 @
-
 
 
 \section{Generalized additive modeling (GAM)}
@@ -430,6 +533,15 @@ ggpairs(DATAnoNA[,c(v, RESPONSE)])
 \label{fig:pairsLand_rf}
 \end{figure}
 
+
+<<>>=
+getOption("mgcv.vc.logrange") #25 #see ?mgcv::gamm about convergence
+options(mgcv.vc.logrange = 15)
+@
+
+
+\subsection{Backward selection}
+
 Full model:
 <<>>=
 K = 5
@@ -441,13 +553,9 @@ gam_0 = gamfit = mgcv::gam(sqrtLandings ~
                            + s(AMO_DJFMA_l5, k = K)
                            + s(AMO_DJFMA_l6, k = K)
                            + s(AMO_DJFMA_l7, k = K)
-                           + s(NAO_DJF_PC_l1, k = K)
-                           + s(NAO_DJF_PC_l3, k = K)
                            + s(NAO_DJF_PC_l4, k = K)
                            + s(NAO_DJF_st_l3, k = K)
                            + s(NAO_DJF_st_l4, k = K)
-                           + s(NAO_DJFMA_st_l4, k = K)
-                           + s(NAO_DJFMA_st_l6, k = K)
                            , select = TRUE
                            , bs = "cr"
                            , method = "REML"
@@ -471,7 +579,6 @@ To additionally incorporate autocorrelation into the model (to get rid of autoco
 Reduced model:
 <<>>=
 #cc removed because of concurvity
-#1# after that, removed first because of non-significance
 ##1 after that, switched to gamm and AR1 structure and continue removal
 set.seed(111111)
 K = 5
@@ -480,20 +587,16 @@ gam_1 = gamfit = mgcv::gamm(sqrtLandings ~
                        #cc + s(AMO_annual_l5, k = K)
                        #cc + s(AMO_annual_l6, k = K)
                        #cc + s(AMO_annual_l7, k = K)
-                        #2# + s(AMO_DJFMA_l5, k = K)
+                         ##2 + s(AMO_DJFMA_l5, k = K)
                          ##3 + s(AMO_DJFMA_l6, k = K)
                            + s(AMO_DJFMA_l7, k = K)
-                        #1# + s(NAO_DJF_PC_l1, k = K)
-                           + s(NAO_DJF_PC_l3, k = K)
                        #cc + s(NAO_DJF_PC_l4, k = K)
-                       #cc + s(NAO_DJF_st_l3, k = K)
+                           + s(NAO_DJF_st_l3, k = K)
                            + s(NAO_DJF_st_l4, k = K)
-                       #cc + s(NAO_DJFMA_st_l4, k = K)
-                         ##2 + s(NAO_DJFMA_st_l6, k = K)
                            , select = TRUE
                            , bs = "cr"
                            , method = "REML"
-                           , correlation = corAR1()
+                           , correlation = corARMA(p = 1, q = 0)
                            , data = DATAnoNA)
 @
 
@@ -544,6 +647,85 @@ plot(gamfit, las = 1)
 \label{fig:gam_smooths}
 \end{figure}
 
+
+\subsection{Forward selection}
+
+Order of selection same as for CPUE (based on importance, not absolute Spearman correlation). Note: forward selection with order based on Spearman (use \texttt{x = tmp} below) gave the same resulting model as the backward selection in the previous section.
+<<>>=
+fcts = c("Time_block")
+w2 = setdiff(w, fcts)
+@
+
+<<>>=
+tmp = names(sort(abs(Hmisc::rcorr(as.matrix(DATAnoNA[,c(RESPONSE, w2)]),
+                                  type = "spearman")[[1]][1,]), decreasing = TRUE))[-1]
+gs_all = gamforward(y = RESPONSE,
+                    x = w2, #w2 or tmp if want order by |r_spearman|
+                    data = DATAnoNA)
+K = 5
+f = as.formula(paste0(RESPONSE, " ~ s(", paste0(gs_all, collapse = ", k = K) + s("), ", k = K)"))
+gam_1forward = gamfit = mgcv::gamm(f
+                            , select = TRUE
+                            , bs = "cr"
+                            , method = "REML"
+                            , correlation = corARMA(p = 1, q = 0)
+                            , data = DATAnoNA)
+# summary(gamfit$gam)
+# summary(gamfit$lme)
+# concurvity(gamfit$gam)[3,-1]
+# acf(residuals(gamfit))
+# acf(residuals(gamfit$lme, type = "normalized"), las = 1, main = "Standardized residual ACF")
+@
+
+GAM part:
+<<>>=
+summary(gamfit$gam)
+@
+
+LME part:
+<<>>=
+summary(gamfit$lme)
+@
+
+Normality of residuals:
+<<>>=
+shapiro.test(residuals(gamfit$lme, type = "normalized"))
+shapiro.test(residuals(gamfit$lme, type = "response"))
+@
+
+
+\begin{figure}
+\centering
+<<fig.height=3>>=
+par(mfrow = c(1, 2))
+plot.ts(residuals(gamfit$lme, type = "normalized"), las = 1)
+abline(h = 0, col = COL["green"], lty = 2)
+acf(residuals(gamfit$lme, type = "normalized"), las = 1, main = "Standardized residual ACF")
+@
+\caption{Time series plot and autocorrelation function of residuals of the reduced GAMM (forward selection).}
+\label{fig:gam_acf_forward}
+\end{figure}
+
+
+Run more checks:
+<<>>=
+gamfit = gamfit$gam
+concurvity(gamfit)
+concurvity(gamfit, full = FALSE)$estimate
+gam.check(gamfit)
+@
+
+\begin{figure}
+<<fig.height=3>>=
+par(mfrow = c(1, 3))
+plot(gamfit, las = 1)
+@
+\caption{Smoothed terms of the final GAMM for the \Sexpr{RESPONSEprint}.}
+\label{fig:gam_smooths_forward}
+\end{figure}
+
+
+
 \FloatBarrier
 \subsection{Cross-validation}
 The scheme is the same as the one applied to random forests (see p.~\pageref{cvscheme}).
@@ -558,12 +740,12 @@ for (cv in seq_along(CVperiods)){ # cv=1
   indtest = (TBcenter[CVperiods[cv]] + 1):TBend[CVperiods[cv]]
   gam_cv = mgcv::gamm(sqrtLandings ~
                         + s(AMO_DJFMA_l7, k = K)
-                      + s(NAO_DJF_PC_l3, k = K)
+                      + s(NAO_DJF_st_l3, k = K)
                       + s(NAO_DJF_st_l4, k = K)
                       , select = TRUE
                       , bs = "cr" #cr/cs/cc
                       , method = "REML"
-                      , correlation = corAR1()
+                      , correlation = corARMA(p = 1, q = 0)
                       , control = list(maxIter = 1000)
                       , data = DATAnoNA[as.character(indtrain),])
   obs =  DATAnoNA[as.character(indtest), RESPONSE] #observed in the testing set
@@ -578,25 +760,79 @@ for (cv in seq_along(CVperiods)){ # cv=1
   #acf(e_train) #ar(e_train, aic = FALSE, order.max = 1) #check that is similar to phi
   e = obs - pred_gam #autocorrelated error in the testing set
   pred_gamm = pred_gam + phi * c(e_train[length(e_train)], e[-length(e)])
-  PRED[[cv]] = list(obs = obs, pred = pred_gamm)
+  PRED[[cv]] = list(obs = obs, pred_gamm = pred_gamm, pred_gam = pred_gam)
 }
 @
 
 Prediction mean absolute error (PMAE) and prediction root mean square error (PRMSE).
+Note, \texttt{err\_gam} correspond to errors when we do not know the previous month landings, so it is more like $h$-step ahead prediction errors, rather than \texttt{err\_gamm} that use the observed error from the previous month, that is more like 1-step ahead predictions.
 <<>>=
-err = lapply(PRED, function(x) x$obs - x$pred)
-err = unlist(err)
-@
-PMAE
-<<>>=
-mean(abs(err))
-@
-PRMSE
-<<>>=
-sqrt(mean(err^2))
+err_gam = lapply(PRED, function(x) x$obs - x$pred_gam)
+err_gam = unlist(err_gam)
+err_gamm = lapply(PRED, function(x) x$obs - x$pred_gamm)
+err_gamm = unlist(err_gamm)
+# PMAE
+mean(abs(err_gam))
+mean(abs(err_gamm))
+# PRMSE
+sqrt(mean(err_gam^2))
+sqrt(mean(err_gamm^2))
 @
 
 
+
+\FloatBarrier
+\subsection{Cross-validation of forward-selected model}
+The scheme is the same as the one applied to random forests (see p.~\pageref{cvscheme}).
+
+<<>>=
+set.seed(222222)
+CVperiods = c("PostWWII", "Longline")
+PRED = as.list(rep(NA, length(CVperiods)))
+yrs = as.numeric(rownames(DATAnoNA))
+for (cv in seq_along(CVperiods)){ # cv=1
+  indtrain = yrs[1]:TBcenter[CVperiods[cv]]
+  indtest = (TBcenter[CVperiods[cv]] + 1):TBend[CVperiods[cv]]
+  gam_cv = mgcv::gamm(sqrtLandings ~
+                        + s(AMO_DJFMA_l7, k = K)
+                      # + s(NAO_DJF_st_l3, k = K)
+                      + s(NAO_DJF_st_l4, k = K)
+                      , select = TRUE
+                      , bs = "cr" #cr/cs/cc
+                      , method = "REML"
+                      , correlation = corARMA(p = 1, q = 0)
+                      , control = list(maxIter = 1000)
+                      , data = DATAnoNA[as.character(indtrain),])
+  obs =  DATAnoNA[as.character(indtest), RESPONSE] #observed in the testing set
+  # Predictions:
+  ## make a prediction, with random effects zero
+  pred_gam = predict(gam_cv$gam, newdata = DATAnoNA[as.character(indtest),])
+  phi = gam_cv$lme$modelStruct$corStruct
+  phi = coef(phi, unconstrained = FALSE) #AR(1) coefficient
+  ## extract autocorrelated errors in the training period (we'll need the last observed error)
+  fit_gam = fitted(gam_cv$lme)
+  e_train = DATAnoNA[as.character(indtrain), RESPONSE] - fit_gam
+  #acf(e_train) #ar(e_train, aic = FALSE, order.max = 1) #check that is similar to phi
+  e = obs - pred_gam #autocorrelated error in the testing set
+  pred_gamm = pred_gam + phi * c(e_train[length(e_train)], e[-length(e)])
+  PRED[[cv]] = list(obs = obs, pred_gamm = pred_gamm, pred_gam = pred_gam)
+}
+@
+
+Prediction mean absolute error (PMAE) and prediction root mean square error (PRMSE).
+Note, \texttt{err\_gam} correspond to errors when we do not know the previous month landings, so it is more like $h$-step ahead prediction errors, rather than \texttt{err\_gamm} that use the observed error from the previous month, that is more like 1-step ahead predictions.
+<<>>=
+err_gam = lapply(PRED, function(x) x$obs - x$pred_gam)
+err_gam = unlist(err_gam)
+err_gamm = lapply(PRED, function(x) x$obs - x$pred_gamm)
+err_gamm = unlist(err_gamm)
+# PMAE
+mean(abs(err_gam))
+mean(abs(err_gamm))
+# PRMSE
+sqrt(mean(err_gam^2))
+sqrt(mean(err_gamm^2))
+@
 
 
 <<>>=

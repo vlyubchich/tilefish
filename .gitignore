@@ -13,3 +13,5 @@ figure*
 *.log
 *.tex
 *.toc
+
+*cpue*
